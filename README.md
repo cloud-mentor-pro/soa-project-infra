@@ -27,11 +27,39 @@
 - ECS Task Definition
 - ECS Execution Role
 
+# Update giá trị trong parameter (value từ DB endpoint và secret manager)
+- soa-param-codeland-db-secret-name
+- soa-param-codeland-db-url
+
 # d-soa-bastion.yaml
 - Create key pair và tải về máy
     - soa-keypair-codeland-bastion
+- Create Cfn stack
 
+### Connect via Session Manager
+Run lệnh bên dưới
 
+```bash
+sudo su -
+su - ec2-user
+```
+
+### Connect DB
+```bash
+# test connect
+./connect-db.sh
+
+# Thoát db
+\q
+```
+
+### Migration
+```bash
+cd /home/ec2-user/projects
+git clone {your-backend-repo-url}
+cd soa-project-backend
+pnpm install
+```
 
 # Deploy frontend (Amplify)	
 - soa-project-frontend

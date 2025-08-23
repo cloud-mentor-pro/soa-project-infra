@@ -21,10 +21,23 @@ Resources:
     Properties:
       Name: soa-param-codeland-db-url
       Type: String
-      Value: 'database-host:5432/database_name'
+      Value: 'database-endpoint'
       Description: 'PostgreSQL database connection URL for SOA application'
       Tags:
         Name: soa-param-codeland-db-url
+        Environment: develop
+        SystemID: SOA
+
+  # Database Secret Name Parameter
+  DatabaseSecretNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: soa-param-codeland-db-secret-name
+      Type: String
+      Value: 'rds!db-...'
+      Description: 'RDS secret name for SOA application database access'
+      Tags:
+        Name: soa-param-codeland-db-secret-name
         Environment: develop
         SystemID: SOA
 
@@ -41,6 +54,12 @@ Outputs:
     Export:
       Name: !Sub "${AWS::StackName}-DatabaseURLParameterName"
 
+  DatabaseSecretNameParameterName:
+    Description: Database Secret Name Parameter Name
+    Value: !Ref DatabaseSecretNameParameter
+    Export:
+      Name: !Sub "${AWS::StackName}-DatabaseSecretNameParameterName"
+
   SecretKeyParameterArn:
     Description: Secret Key Parameter ARN
     Value: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${SecretKeyParameter}'
@@ -52,3 +71,9 @@ Outputs:
     Value: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${DatabaseURLParameter}'
     Export:
       Name: !Sub "${AWS::StackName}-DatabaseURLParameterArn"
+
+  DatabaseSecretNameParameterArn:
+    Description: Database Secret Name Parameter ARN
+    Value: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${DatabaseSecretNameParameter}'
+    Export:
+      Name: !Sub "${AWS::StackName}-DatabaseSecretNameParameterArn"
