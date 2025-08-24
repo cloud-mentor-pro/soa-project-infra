@@ -114,7 +114,7 @@ Resources:
         - Key: Name
           Value: soa-sn-codeland-private-app-01
         - Key: Environment
-          Value: Prod
+          Value: develop
         - Key: SystemID
           Value: SOA
 
@@ -128,7 +128,7 @@ Resources:
         - Key: Name
           Value: soa-sn-codeland-private-app-02
         - Key: Environment
-          Value: Prod
+          Value: develop
         - Key: SystemID
           Value: SOA
 
@@ -143,7 +143,7 @@ Resources:
         - Key: Name
           Value: soa-sn-codeland-private-db-01
         - Key: Environment
-          Value: Prod
+          Value: develop
         - Key: SystemID
           Value: SOA
 
@@ -157,7 +157,7 @@ Resources:
         - Key: Name
           Value: soa-sn-codeland-private-db-02
         - Key: Environment
-          Value: Prod
+          Value: develop
         - Key: SystemID
           Value: SOA
 
@@ -171,7 +171,7 @@ Resources:
         - Key: Name
           Value: soa-ngw-codeland-public-a
         - Key: Environment
-          Value: Prod
+          Value: develop
         - Key: SystemID
           Value: SOA
 
@@ -185,7 +185,7 @@ Resources:
         - Key: Name
           Value: soa-eip-codeland-ngw-001
         - Key: Environment
-          Value: Prod
+          Value: develop
         - Key: SystemID
           Value: SOA
 
@@ -199,7 +199,7 @@ Resources:
         - Key: Name
           Value: soa-rt-codeland-public
         - Key: Environment
-          Value: Prod
+          Value: develop
         - Key: SystemID
           Value: SOA
 
@@ -212,7 +212,7 @@ Resources:
         - Key: Name
           Value: soa-rt-codeland-private-app
         - Key: Environment
-          Value: Prod
+          Value: develop
         - Key: SystemID
           Value: SOA
 
@@ -225,7 +225,7 @@ Resources:
         - Key: Name
           Value: soa-rt-codeland-private-db
         - Key: Environment
-          Value: Prod
+          Value: develop
         - Key: SystemID
           Value: SOA
 
