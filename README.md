@@ -61,12 +61,14 @@ cd soa-project-backend
 pnpm install
 ```
 
-# Deploy frontend (Amplify)	
-- soa-project-frontend
-
-# Tạo thủ công: soaGitHubActionsRole	
+# Tạo thủ công: SOAGitHubActionsRole	
 Identity providers
 soaGitHubActionsRole
 
 # Deploy app: online-learning-api	
 - Github Action
+
+# Create Certificate and Customize domain
+
+# Deploy frontend (Amplify)	
+- soa-project-frontend
