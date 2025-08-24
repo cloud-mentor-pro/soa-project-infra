@@ -58,7 +58,6 @@ su - ec2-user
 cd /home/ec2-user/projects
 git clone {your-backend-repo-url}
 cd soa-project-backend
-pnpm install
 ```
 
 # Tạo thủ công: SOAGitHubActionsRole	
