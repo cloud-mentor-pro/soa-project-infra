@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for SOA Compute Resources - Launch Template, ASG, ALB'
+
+Parameters:
+  # Networking Parameters
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select VPC for resources (khuyến nghị sử dụng VPC từ stack d-soa-network, export: d-soa-network-VPCID)
+
+  PublicSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select Public Subnet 1 (khuyến nghị sử dụng PublicSubnet1 từ stack d-soa-network, export: d-soa-network-PublicSubnet1ID)
+
+  PublicSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select Public Subnet 2 (khuyến nghị sử dụng PublicSubnet2 từ stack d-soa-network, export: d-soa-network-PublicSubnet2ID)
+
+  PrivateAppSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select Private App Subnet 1 (khuyến nghị sử dụng PrivateAppSubnet1 từ stack d-soa-network, export: d-soa-network-PrivateAppSubnet1ID)
+
+  PrivateAppSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select Private App Subnet 2 (khuyến nghị sử dụng PrivateAppSubnet2 từ stack d-soa-network, export: d-soa-network-PrivateAppSubnet2ID)
+
+  # Security Groups Parameters
+  ALBSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Select ALB Security Group (khuyến nghị sử dụng ALBSecurityGroup từ stack d-soa-security-groups, export: d-soa-security-groups-ALBSecurityGroupID)
+
+  AppSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Select App Security Group (khuyến nghị sử dụng EC2AppSecurityGroup từ stack d-soa-security-groups, export: d-soa-security-groups-EC2AppSecurityGroupID)
+
+  # Service Configuration
+  ServiceName:
+    Type: String
+    Description: Service name
+    Default: codeland-api
+
+  AMIId:
+    Type: AWS::EC2::Image::Id
+    Description: Select AMI from existing AMIs in your account (khuyến nghị sử dụng AMI từ stack d-soa-ami-builder, export: d-soa-ami-builder-AMIId)
+
+  InstanceType:
+    Type: String
+    Description: EC2 instance type for Launch Template
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t2.micro
+      - t2.small
+      - t2.medium
+
+Resources:
+  # Launch Template
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub 'soa-lt-codeland-${ServiceName}'
+      LaunchTemplateData:
+        ImageId: !Ref AMIId
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref AppSecurityGroupId
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub 'soa-ec2-codeland-${ServiceName}'
+              - Key: Environment
+                Value: develop
+              - Key: SystemID
+                Value: SOA
+      Tags:
+        - Key: Name
+          Value: !Sub 'soa-lt-codeland-${ServiceName}'
+        - Key: Environment
+          Value: develop
+        - Key: SystemID
+          Value: SOA
+
+  # Target Group
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub 'soa-tg-codeland-${ServiceName}'
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /users/ping
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: !Ref VPCId
+      Tags:
+        - Key: Name
+          Value: !Sub 'soa-tg-codeland-${ServiceName}'
+        - Key: Environment
+          Value: develop
+        - Key: SystemID
+          Value: SOA
+
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub 'soa-alb-codeland-${ServiceName}'
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ALBSecurityGroupId
+      Subnets:
+        - !Ref PublicSubnet1Id
+        - !Ref PublicSubnet2Id
+      Type: application
+      Tags:
+        - Key: Name
+          Value: !Sub 'soa-alb-codeland-${ServiceName}'
+        - Key: Environment
+          Value: develop
+        - Key: SystemID
+          Value: SOA
+
+  # HTTP Listener
+  HTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # Auto Scaling Group
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: 
+      - HTTPListener
+    Properties:
+      AutoScalingGroupName: !Sub 'soa-asg-codeland-${ServiceName}'
+      MinSize: '1'
+      MaxSize: '2'
+      DesiredCapacity: '1'
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+        - !Ref PrivateAppSubnet1Id
+        - !Ref PrivateAppSubnet2Id
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      Tags:
+        - Key: Name
+          Value: !Sub 'soa-ec2-codeland-${ServiceName}'
+          PropagateAtLaunch: true
+        - Key: Environment
+          Value: develop
+          PropagateAtLaunch: true
+        - Key: SystemID
+          Value: SOA
+          PropagateAtLaunch: true
+
+Outputs:
+  ALBDnsName:
+    Description: ALB DNS Name
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub "${AWS::StackName}-ALBDnsName"
+
+  AutoScalingGroupName:
+    Description: Auto Scaling Group Name
+    Value: !Ref AutoScalingGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-AutoScalingGroupName"
+
+  LaunchTemplateId:
+    Description: Launch Template ID
+    Value: !Ref LaunchTemplate
+    Export:
+      Name: !Sub "${AWS::StackName}-LaunchTemplateId"
+
+  TargetGroupArn:
+    Description: Target Group ARN
+    Value: !Ref TargetGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-TargetGroupArn"
