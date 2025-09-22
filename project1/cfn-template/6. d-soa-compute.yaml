@@ -5,32 +5,31 @@ Parameters:
   # Networking Parameters
   VPCId:
     Type: AWS::EC2::VPC::Id
-    Description: Select VPC for resources (khuyến nghị sử dụng VPC từ stack d-soa-network, export: d-soa-network-VPCID)
-
+    Description: Select VPC for resources 
   PublicSubnet1Id:
     Type: AWS::EC2::Subnet::Id
-    Description: Select Public Subnet 1 (khuyến nghị sử dụng PublicSubnet1 từ stack d-soa-network, export: d-soa-network-PublicSubnet1ID)
+    Description: Select Public Subnet 1 
 
   PublicSubnet2Id:
     Type: AWS::EC2::Subnet::Id
-    Description: Select Public Subnet 2 (khuyến nghị sử dụng PublicSubnet2 từ stack d-soa-network, export: d-soa-network-PublicSubnet2ID)
+    Description: Select Public Subnet 2 
 
   PrivateAppSubnet1Id:
     Type: AWS::EC2::Subnet::Id
-    Description: Select Private App Subnet 1 (khuyến nghị sử dụng PrivateAppSubnet1 từ stack d-soa-network, export: d-soa-network-PrivateAppSubnet1ID)
+    Description: Select Private App Subnet 1 
 
   PrivateAppSubnet2Id:
     Type: AWS::EC2::Subnet::Id
-    Description: Select Private App Subnet 2 (khuyến nghị sử dụng PrivateAppSubnet2 từ stack d-soa-network, export: d-soa-network-PrivateAppSubnet2ID)
+    Description: Select Private App Subnet 2 
 
   # Security Groups Parameters
   ALBSecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
-    Description: Select ALB Security Group (khuyến nghị sử dụng ALBSecurityGroup từ stack d-soa-security-groups, export: d-soa-security-groups-ALBSecurityGroupID)
+    Description: Select ALB Security Group 
 
   AppSecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
-    Description: Select App Security Group (khuyến nghị sử dụng EC2AppSecurityGroup từ stack d-soa-security-groups, export: d-soa-security-groups-EC2AppSecurityGroupID)
+    Description: Select App Security Group 
 
   # Service Configuration
   ServiceName:
@@ -40,7 +39,7 @@ Parameters:
 
   AMIId:
     Type: AWS::EC2::Image::Id
-    Description: Select AMI from existing AMIs in your account (khuyến nghị sử dụng AMI từ stack d-soa-ami-builder, export: d-soa-ami-builder-AMIId)
+    Description: Select AMI from existing AMIs in your account 
 
   InstanceType:
     Type: String
@@ -74,14 +73,6 @@ Resources:
                 Value: develop
               - Key: SystemID
                 Value: SOA
-      Tags:
-        - Key: Name
-          Value: !Sub 'soa-lt-codeland-${ServiceName}'
-        - Key: Environment
-          Value: develop
-        - Key: SystemID
-          Value: SOA
-
   # Target Group
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup

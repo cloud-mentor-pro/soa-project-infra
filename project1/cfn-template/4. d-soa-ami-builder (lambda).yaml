@@ -1,0 +1,1057 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EC2 Image Builder Pipeline with Auto Build - Stack only SUCCESS when AMI build is complete'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: 'VPC ID for building AMI'
+  
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: 'Subnet ID (should be private subnet with NAT Gateway connection)'
+  
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: 'Security Group ID for EC2 instance builder'
+  
+  GitRepositoryUrl:
+    Type: String
+    Default: 'https://github.com/cloud-mentor-pro/soa-project-backend'
+    Description: 'GitHub repository URL'
+  
+  GitBranchName:
+    Type: String
+    Default: 'develop-SOA-K02'
+    Description: 'Git branch name to checkout (e.g., main, develop, feature/xxx)'
+  
+  DBUrlParameterPath:
+    Type: String
+    Default: 'soa-param-codeland-db-url'
+    Description: 'SSM Parameter Store path for DB URL (host)'
+  
+  DBPasswordSecretId:
+    Type: String
+    Default: 'rds!zzz'
+    Description: 'Secrets Manager secret ID for DB Password'
+
+Resources:
+  # ==========================================
+  # IAM Role and Instance Profile
+  # ==========================================
+  ImageBuilderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ImageBuilder-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder
+        - arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilderECRContainerBuilds 
+      Policies:
+        - PolicyName: ImageBuilder
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - imagebuilder:GetComponent
+                  - imagebuilder:GetImage
+                  - imagebuilder:GetImageRecipe
+                  - imagebuilder:GetInfrastructureConfiguration
+                  - imagebuilder:GetDistributionConfiguration
+                  - imagebuilder:ListComponents
+                  - imagebuilder:ListImageBuildVersions
+                  - imagebuilder:ListImages
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParameterHistory
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${DBUrlParameterPath}'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${DBPasswordSecretId}*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-ImageBuilderRole'
+        - Key: Environment
+          Value: 'SOA'
+        - Key: ManagedBy
+          Value: 'CloudFormation'
+
+  ImageBuilderInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn:
+    - ImageBuilderRole
+    Properties:
+      InstanceProfileName: !Sub '${AWS::StackName}-ImageBuilder-Profile'
+      Roles:
+        - !Ref ImageBuilderRole
+
+  # ==========================================
+  # Lambda Role for Custom Resource
+  # ==========================================
+  AMIBuilderLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-AMIBuilder-Lambda-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ImageBuilderAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - imagebuilder:StartImagePipelineExecution
+                  - imagebuilder:GetImagePipeline
+                  - imagebuilder:ListImagePipelineImages
+                  - imagebuilder:GetImage
+                  - imagebuilder:CancelImageCreation
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeImages
+                  - ec2:DescribeImageAttribute
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-LambdaRole'
+        - Key: Environment
+          Value: 'SOA'
+
+  # ==========================================
+  # Lambda Function - Always wait for AMI build to complete
+  # ==========================================
+  AMIBuilderFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - ImagePipeline
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-AMIBuilder'
+      Description: 'Custom Resource to build and wait for AMI to complete - Stack only SUCCESS when AMI is ready'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt AMIBuilderLambdaRole.Arn
+      Timeout: 900  # 15 minutes timeout
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import time
+          import cfnresponse
+          import logging
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          imagebuilder = boto3.client('imagebuilder')
+          ec2 = boto3.client('ec2')
+          
+          def wait_for_ami_build(pipeline_arn, max_wait_time=840):
+              """
+              Wait for AMI build to complete
+              max_wait_time: maximum wait time (seconds) - default 14 minutes
+              """
+              start_time = time.time()
+              poll_interval = 30  # Check every 30 seconds
+              
+              while (time.time() - start_time) < max_wait_time:
+                  try:
+                      # List recent images from pipeline
+                      response = imagebuilder.list_image_pipeline_images(
+                          imagePipelineArn=pipeline_arn,
+                          maxResults=1
+                      )
+                      
+                      if response.get('imageSummaryList'):
+                          latest_image = response['imageSummaryList'][0]
+                          state = latest_image.get('state', {}).get('status', 'PENDING')
+                          
+                          logger.info(f"Build status: {state}, Time elapsed: {int(time.time() - start_time)}s")
+                          
+                          if state == 'AVAILABLE':
+                              # AMI build successful
+                              output_resources = latest_image.get('outputResources', {})
+                              amis = output_resources.get('amis', [])
+                              
+                              if amis:
+                                  ami_id = amis[0].get('image')
+                                  ami_region = amis[0].get('region')
+                                  logger.info(f"AMI build COMPLETE: {ami_id} in {ami_region}")
+                                  return {
+                                      'success': True,
+                                      'ami_id': ami_id,
+                                      'build_version': latest_image.get('version'),
+                                      'state': state,
+                                      'build_time': int(time.time() - start_time)
+                                  }
+                          
+                          elif state in ['FAILED', 'CANCELLED']:
+                              # Build failed
+                              reason = latest_image.get('state', {}).get('reason', 'Unknown error')
+                              logger.error(f"Build FAILED: {reason}")
+                              return {
+                                  'success': False,
+                                  'error': f'Build failed with state: {state}',
+                                  'reason': reason
+                              }
+                      
+                      # Wait before next poll
+                      time.sleep(poll_interval)
+                      
+                  except Exception as e:
+                      logger.error(f"Error polling build status: {str(e)}")
+                      time.sleep(poll_interval)
+              
+              # Timeout
+              return {
+                  'success': False,
+                  'error': 'Build timeout',
+                  'reason': f'AMI build did not complete within {max_wait_time} seconds'
+              }
+          
+          def handler(event, context):
+              try:
+                  request_type = event['RequestType']
+                  pipeline_arn = event['ResourceProperties']['PipelineArn']
+                  
+                  logger.info(f"Request Type: {request_type}, Pipeline: {pipeline_arn}")
+                  
+                  if request_type == 'Create' or request_type == 'Update':
+                      # ALWAYS auto build AMI
+                      logger.info("========================================")
+                      logger.info("Starting AMI Build Process...")
+                      logger.info(f"Pipe ARN: {pipeline_arn}")
+                      logger.info("========================================")
+                      
+                      try:
+                          # Start pipeline execution
+                          response = imagebuilder.start_image_pipeline_execution(
+                              imagePipelineArn=pipeline_arn
+                          )
+                          build_arn = response['imageBuildVersionArn']
+                          logger.info(f"Pipeline started: {build_arn}")
+                      except Exception as e:
+                          logger.error(f"Failed to start pipeline: {str(e)}")
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {
+                              'Status': 'PIPELINE_START_FAILED',
+                              'Error': str(e)
+                          })
+                          return
+                      
+                      # Wait 30 seconds for build initialization
+                      logger.info("Waiting 30 seconds for build initialization...")
+                      time.sleep(30)
+                      
+                      # Wait for AMI build to complete
+                      logger.info("Polling for AMI build completion...")
+                      result = wait_for_ami_build(pipeline_arn)
+                      
+                      if result['success']:
+                          # Build successful - Stack will display SUCCESS
+                          logger.info("========================================")
+                          logger.info(f"AMI BUILD SUCCESS!")
+                          logger.info(f"AMI ID: {result['ami_id']}")
+                          logger.info(f"Build Time: {result['build_time']} seconds")
+                          logger.info("========================================")
+                          
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                              'Status': 'BUILD_COMPLETE',
+                              'AMIId': result['ami_id'],
+                              'BuildVersion': result.get('build_version', 'N/A'),
+                              'State': result['state'],
+                              'BuildTime': f"{result['build_time']} seconds"
+                          }, result['ami_id'])
+                      else:
+                          # Build failed - Stack will ROLLBACK
+                          logger.error("========================================")
+                          logger.error("AMI BUILD FAILED!")
+                          logger.error(f"Error: {result['error']}")
+                          logger.error(f"Reason: {result['reason']}")
+                          logger.error("========================================")
+                          
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {
+                              'Status': 'BUILD_FAILED',
+                              'Error': result['error'],
+                              'Reason': result['reason']
+                          })
+                      
+                  elif request_type == 'Delete':
+                      # Cleanup when deleting stack
+                      logger.info("Delete request - cleaning up")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'Status': 'DELETE_COMPLETE'
+                      })
+                      
+              except Exception as e:
+                  logger.error(f"Unexpected error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {
+                      'Status': 'UNEXPECTED_ERROR',
+                      'Error': str(e)
+                  })
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Lambda-AMIBuilder'
+        - Key: Environment
+          Value: 'SOA'
+
+  # ==========================================
+  # Build Component
+  # ==========================================
+  ApplicationBuildComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties:
+      Name: !Sub '${AWS::StackName}-build-component'
+      Version: '1.0.0'
+      Platform: Linux
+      Description: 'Component to install Python 3.12, dependencies and setup application'
+      SupportedOsVersions:
+        - 'Amazon Linux 2023'
+      Tags:
+        Name: !Sub '${AWS::StackName}-Component'
+        Environment: 'SOA'
+        Purpose: 'BuildAndInstall'
+      Data: !Sub |
+        name: ApplicationSetupComponent
+        description: Install and configure Python application with Gunicorn
+        schemaVersion: 1.0
+        
+        constants:
+          - AppDir:
+              type: string
+              value: ~/app
+          - ServiceName:
+              type: string
+              value: python-app
+        
+        phases:
+          - name: build
+            steps:
+              # Step 1: Update system and install base packages
+              - name: UpdateAndInstallBase
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Step 1: Update system and install basic packages ====="
+                      echo "switch to ec2-user"
+                      sudo -u ec2-user bash << 'EOF'
+                      cd /home/ec2-user
+                      echo $(whoami)
+
+                      sudo dnf update -y
+                      
+                      # Install necessary packages
+                      sudo dnf install -y nmap-ncat gcc gcc-c++ make postgresql-devel python3-devel
+                      
+                      echo "Installed basic packages"
+              # Step 2: Install Git
+              - name: InstallGit
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Step 3: Install Git ====="
+                      sudo dnf install -y git
+                      git --version
+                      echo "Git has been installed"
+
+              # Step 3: Install Python 3.12
+              - name: InstallPython312
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Step 2: Install Python 3.12 ====="
+                      sudo dnf install -y python3.12 python3.12-pip python3.12-devel
+                      sudo alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+                      sudo alternatives --set python3 /usr/bin/python3.12
+                      sudo ln -sf /usr/bin/pip3.12 /usr/bin/pip3
+                      
+                      python3 --version
+                      pip3 --version
+                      echo "Python 3.12 has been installed"
+              
+
+              
+              # Step 4: Clone repository and checkout branch
+              - name: CloneRepository
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Step 4: Clone source code from GitHub ====="
+                      
+                      [ -d "{{ AppDir }}" ] && sudo rm -rf {{ AppDir }}
+                      
+                      cd ~
+                      echo "Cloning repository: ${GitRepositoryUrl}"
+                      git clone ${GitRepositoryUrl} app
+                      
+                      cd {{ AppDir }}
+                      echo "Checking out branch: ${GitBranchName}"
+                      git checkout ${GitBranchName}
+                      git pull origin ${GitBranchName}
+                      
+                      echo "Current branch:"
+                      git branch --show-current
+                      echo "Latest commit:"
+                      git log --oneline -1
+                      
+                      sudo chown -R $USER:$USER {{ AppDir }}
+                      
+                      echo "Cloned repository and checked out branch ${GitBranchName}"
+                      ls -la {{ AppDir }}
+              
+              # Step 5: Install Python dependencies
+              - name: InstallPythonDependencies
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Step 5: Install Python dependencies ====="
+                      
+                      cd {{ AppDir }}/backend
+                      pip3 install --upgrade pip
+                      pip3 install gunicorn
+                      
+                      if [ -f requirements.txt ]; then
+                        pip3 install -r requirements.txt
+                        echo "Installed requirements.txt"
+                      else
+                        echo "requirements.txt not found"
+                      fi
+                      
+                      pip3 show gunicorn
+              
+              # Step 6: Create startup script
+              - name: CreateStartupScript
+                action: CreateFile
+                onFailure: Abort
+                inputs:
+                  - path: '{{ AppDir }}/start.sh'
+                    permissions: 755
+                    owner: ec2-user
+                    group: ec2-user
+                    content: |
+                      #!/bin/bash
+                      set -e
+                      
+                      echo "Loading environment variables..."
+                      
+                      # Load DB URL from Parameter Store
+                      export DB_URL=$(aws ssm get-parameter \
+                        --name "${DBUrlParameterPath}" \
+                        --query 'Parameter.Value' \
+                        --output text \
+                        --region ${AWS::Region} 2>/dev/null || echo "localhost")
+                      
+                      # Load DB Password from Secrets Manager
+                      export DB_PASSWORD=$(aws secretsmanager get-secret-value \
+                        --secret-id "${DBPasswordSecretId}" \
+                        --query SecretString \
+                        --output text \
+                        --region ${AWS::Region} 2>/dev/null || echo "default_password")
+                      
+                      export DB_PORT=5432
+                      export PORT=80
+                      
+                      echo "Configuration:"
+                      echo "  DB_URL: $DB_URL"
+                      echo "  DB_PORT: $DB_PORT"
+                      echo "  APP_PORT: $PORT"
+                      
+                      # Check database connection
+                      echo "Checking database connection..."
+                      counter=0
+                      while ! nc -z $DB_URL $DB_PORT 2>/dev/null; do
+                          sleep 0.1
+                          counter=$((counter + 1))
+                          if [ $counter -ge 600 ]; then
+                              echo "Timeout: Could not connect to PostgreSQL after 60 seconds."
+                              exit 1
+                          fi
+                      done
+                      echo "PostgreSQL is reachable"
+                      
+                      # Start Gunicorn server
+                      echo "Starting Gunicorn server..."
+                      cd {{ AppDir }}
+                      exec gunicorn -b 0.0.0.0:$PORT manage:app \
+                        --workers 4 \
+                        --timeout 120 \
+                        --log-level info
+              
+              # Step 7: Create systemd service
+              - name: CreateSystemdService
+                action: CreateFile
+                onFailure: Abort
+                inputs:
+                  - path: /etc/systemd/system/{{ ServiceName }}.service
+                    permissions: 644
+                    owner: root
+                    group: root
+                    content: |
+                      [Unit]
+                      Description=Python Application with Gunicorn
+                      After=network.target
+                      
+                      [Service]
+                      Type=simple
+                      User=ec2-user
+                      Group=ec2-user
+                      WorkingDirectory={{ AppDir }}
+                      Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+                      Environment="LANG=en_US.UTF-8"
+                      ExecStart={{ AppDir }}/start.sh
+                      Restart=always
+                      RestartSec=10
+                      StandardOutput=journal
+                      StandardError=journal
+                      SyslogIdentifier={{ ServiceName }}
+                      
+                      [Install]
+                      WantedBy=multi-user.target
+              
+              # Step 8: Enable service
+              - name: EnableService
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Step 8: Enable systemd service ====="
+                      sudo systemctl daemon-reload
+                      sudo systemctl enable {{ ServiceName }}.service
+                      echo "Service has been enabled for automatic startup"
+          
+          - name: validate
+            steps:
+              - name: ValidateSetup
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Validation Phase ====="
+                      
+                      # Validate installed components
+                      python3 --version || exit 1
+                      git --version || exit 1
+                      pip3 show gunicorn || exit 1
+                      
+                      # Validate files and directories
+                      [ -d "{{ AppDir }}" ] || { echo "App directory not found"; exit 1; }
+                      [ -f "{{ AppDir }}/start.sh" ] || { echo "Start script not found"; exit 1; }
+                      [ -f "/etc/systemd/system/{{ ServiceName }}.service" ] || { echo "Service file not found"; exit 1; }
+                      
+                      # Validate service configuration
+                      systemctl is-enabled {{ ServiceName }}.service || { echo "Service not enabled"; exit 1; }
+                      
+                      echo "All validation checks have passed"
+
+  # ==========================================
+  # Infrastructure Configuration
+  # ==========================================
+  InfrastructureConfig:
+    Type: AWS::ImageBuilder::InfrastructureConfiguration
+    DependsOn:
+    - ImageBuilderInstanceProfile   
+    - ApplicationBuildComponent      
+    Properties:
+      Name: !Sub '${AWS::StackName}-infra-config'
+      Description: 'Infrastructure configuration for Image Builder'
+      InstanceProfileName: "ImageBuilderRoleLongns"
+      InstanceTypes:
+        - t3.medium
+        - t3.small
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref SecurityGroupId
+      TerminateInstanceOnFailure: true
+      ResourceTags:
+        BuilderName: !Sub '${AWS::StackName}-BuilderInstance'
+        Environment: 'SOA'
+        Purpose: 'ImageBuilding'
+
+  # ==========================================
+  # Image Recipe
+  # ==========================================
+  AppImageRecipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    Properties:
+      Name: !Sub '${AWS::StackName}-recipe'
+      Version: '1.0.0'
+      Description: 'Recipe for Python application on Amazon Linux 2023'
+      ParentImage: !Sub 'arn:aws:imagebuilder:${AWS::Region}:aws:image/amazon-linux-2023-x86/x.x.x'
+      Components:
+        - ComponentArn: !Ref ApplicationBuildComponent
+      BlockDeviceMappings:
+        - DeviceName: '/dev/xvda'
+          Ebs:
+            VolumeSize: 20
+            VolumeType: 'gp3'
+            DeleteOnTermination: true
+            Encrypted: true
+      Tags:
+        Name: !Sub '${AWS::StackName}-Recipe'
+        Environment: 'SOA'
+        BaseOS: 'AmazonLinux2023'
+
+  # ==========================================
+  # Distribution Configuration
+  # ==========================================
+  DistributionConfig:
+    Type: AWS::ImageBuilder::DistributionConfiguration
+    Properties:
+      Name: !Sub '${AWS::StackName}-distribution'
+      Description: 'Distribution configuration - Private AMI (owner only)'
+      Distributions:
+        - Region: !Ref AWS::Region
+          AmiDistributionConfiguration:
+            Name: !Sub '${AWS::StackName}-AMI-{{imagebuilder:buildDate}}'
+            Description: 'Python application AMI built on {{imagebuilder:buildDate}}'
+            AmiTags:
+              Name: !Sub '${AWS::StackName}-AMI'
+              Environment: 'SOA'
+              BuildDate: '{{imagebuilder:buildDate}}'
+              SourcePipeline: !Sub '${AWS::StackName}'
+              GitRepository: !Ref GitRepositoryUrl
+              GitBranch: !Ref GitBranchName
+            # No LaunchPermissionConfiguration set to keep AMI private (owner access only)
+
+
+  # ==========================================
+  # Execution Role với AWSServiceRoleForImageBuilder Policy
+  # ==========================================
+  ImageBuilderWorkflowExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-WorkflowExecution-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: imagebuilder.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ImageBuilderServiceRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ec2:RegisterImage
+                Resource:
+                  - "arn:aws:ec2:*::image/*"
+                Condition:
+                  StringEquals:
+                    "aws:RequestTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action: ec2:RegisterImage
+                Resource:
+                  - "arn:aws:ec2:*::snapshot/*"
+                Condition:
+                  StringEquals:
+                    "ec2:ResourceTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action:
+                  - ec2:RunInstances
+                Resource:
+                  - "arn:aws:ec2:*::image/*"
+                  - "arn:aws:ec2:*::snapshot/*"
+                  - "arn:aws:ec2:*:*:subnet/*"
+                  - "arn:aws:ec2:*:*:network-interface/*"
+                  - "arn:aws:ec2:*:*:security-group/*"
+                  - "arn:aws:ec2:*:*:key-pair/*"
+                  - "arn:aws:ec2:*:*:launch-template/*"
+                  - "arn:aws:license-manager:*:*:license-configuration:*"
+              - Effect: Allow
+                Action:
+                  - ec2:RunInstances
+                Resource:
+                  - "arn:aws:ec2:*:*:volume/*"
+                  - "arn:aws:ec2:*:*:instance/*"
+                Condition:
+                  StringEquals:
+                    "aws:RequestTag/CreatedBy":
+                      - "EC2 Image Builder"
+                      - "EC2 Fast Launch"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "iam:PassedToService":
+                      - "ec2.amazonaws.com"
+                      - "ec2.amazonaws.com.cn"
+                      - "vmie.amazonaws.com"
+              - Effect: Allow
+                Action:
+                  - ec2:StopInstances
+                  - ec2:StartInstances
+                  - ec2:TerminateInstances
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "ec2:ResourceTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action:
+                  - ec2:CopyImage
+                  - ec2:CreateImage
+                  - ec2:CreateLaunchTemplate
+                  - ec2:DeregisterImage
+                  - ec2:DescribeImages
+                  - ec2:DescribeInstanceAttribute
+                  - ec2:DescribeInstanceStatus
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceTypeOfferings
+                  - ec2:DescribeInstanceTypes
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeTags
+                  - ec2:ModifyImageAttribute
+                  - ec2:DescribeImportImageTasks
+                  - ec2:DescribeExportImageTasks
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeHosts
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:ModifySnapshotAttribute
+                Resource: "arn:aws:ec2:*::snapshot/*"
+                Condition:
+                  StringEquals:
+                    "ec2:ResourceTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "ec2:CreateAction":
+                      - "RunInstances"
+                      - "CreateImage"
+                    "aws:RequestTag/CreatedBy":
+                      - "EC2 Image Builder"
+                      - "EC2 Fast Launch"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                Resource:
+                  - "arn:aws:ec2:*::image/*"
+                  - "arn:aws:ec2:*:*:export-image-task/*"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                Resource:
+                  - "arn:aws:ec2:*::snapshot/*"
+                  - "arn:aws:ec2:*:*:launch-template/*"
+                Condition:
+                  StringEquals:
+                    "aws:RequestTag/CreatedBy":
+                      - "EC2 Image Builder"
+                      - "EC2 Fast Launch"
+              - Effect: Allow
+                Action:
+                  - license-manager:UpdateLicenseSpecificationsForResource
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ssm:ListCommands
+                  - ssm:ListCommandInvocations
+                  - ssm:AddTagsToResource
+                  - ssm:DescribeInstanceInformation
+                  - ssm:GetAutomationExecution
+                  - ssm:StopAutomationExecution
+                  - ssm:ListInventoryEntries
+                  - ssm:SendAutomationSignal
+                  - ssm:DescribeInstanceAssociationsStatus
+                  - ssm:DescribeAssociationExecutions
+                  - ssm:GetCommandInvocation
+                Resource: "*"
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - "arn:aws:ssm:*:*:document/AWS-RunPowerShellScript"
+                  - "arn:aws:ssm:*:*:document/AWS-RunShellScript"
+                  - "arn:aws:ssm:*:*:document/AWSEC2-RunSysprep"
+                  - "arn:aws:s3:::*"
+              - Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource:
+                  - "arn:aws:ec2:*:*:instance/*"
+                Condition:
+                  StringEquals:
+                    "ssm:resourceTag/CreatedBy":
+                      - "EC2 Image Builder"
+              - Effect: Allow
+                Action: ssm:StartAutomationExecution
+                Resource: "arn:aws:ssm:*:*:automation-definition/ImageBuilder*"
+              - Effect: Allow
+                Action:
+                  - ssm:CreateAssociation
+                  - ssm:DeleteAssociation
+                Resource:
+                  - "arn:aws:ssm:*:*:document/AWS-GatherSoftwareInventory"
+                  - "arn:aws:ssm:*:*:association/*"
+                  - "arn:aws:ec2:*:*:instance/*"
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncryptFrom
+                  - kms:ReEncryptTo
+                  - kms:GenerateDataKeyWithoutPlaintext
+                Resource: "*"
+                Condition:
+                  ForAllValues:StringEquals:
+                    "kms:EncryptionContextKeys":
+                      - "aws:ebs:id"
+                  StringLike:
+                    "kms:ViaService":
+                      - "ec2.*.amazonaws.com"
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    "kms:ViaService":
+                      - "ec2.*.amazonaws.com"
+              - Effect: Allow
+                Action: kms:CreateGrant
+                Resource: "*"
+                Condition:
+                  Bool:
+                    "kms:GrantIsForAWSResource": true
+                  StringLike:
+                    "kms:ViaService":
+                      - "ec2.*.amazonaws.com"
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: "arn:aws:iam::*:role/EC2ImageBuilderDistributionCrossAccountRole"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:log-group:/aws/imagebuilder/*"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateLaunchTemplateVersion
+                  - ec2:DescribeLaunchTemplates
+                  - ec2:ModifyLaunchTemplate
+                  - ec2:DescribeLaunchTemplateVersions
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:ExportImage
+                Resource: "arn:aws:ec2:*::image/*"
+                Condition:
+                  StringEquals:
+                    "ec2:ResourceTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action:
+                  - ec2:ExportImage
+                Resource: "arn:aws:ec2:*:*:export-image-task/*"
+              - Effect: Allow
+                Action:
+                  - ec2:CancelExportTask
+                Resource: "arn:aws:ec2:*:*:export-image-task/*"
+                Condition:
+                  StringEquals:
+                    "ec2:ResourceTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "iam:AWSServiceName":
+                      - "ssm.amazonaws.com"
+                      - "ec2fastlaunch.amazonaws.com"
+              - Effect: Allow
+                Action:
+                  - ec2:EnableFastLaunch
+                Resource:
+                  - "arn:aws:ec2:*::image/*"
+                  - "arn:aws:ec2:*:*:launch-template/*"
+                Condition:
+                  StringEquals:
+                    "ec2:ResourceTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action:
+                  - inspector2:ListCoverage
+                  - inspector2:ListFindings
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:CreateRepository
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "aws:RequestTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action:
+                  - ecr:TagResource
+                Resource: "arn:aws:ecr:*:*:repository/image-builder-*"
+                Condition:
+                  StringEquals:
+                    "aws:RequestTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchDeleteImage
+                Resource: "arn:aws:ecr:*:*:repository/image-builder-*"
+                Condition:
+                  StringEquals:
+                    "ecr:ResourceTag/CreatedBy": "EC2 Image Builder"
+              - Effect: Allow
+                Action:
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:PutRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                Resource:
+                  - "arn:aws:events:*:*:rule/ImageBuilder-*"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                Resource: "arn:aws:ssm:*:*:parameter/imagebuilder/*"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: "arn:aws:ssm:*::parameter/aws/service/*"
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-WorkflowExecutionRole'
+        - Key: Environment
+          Value: 'SOA'
+        - Key: Purpose
+          Value: 'ImageBuilderWorkflowExecution'
+
+  # ==========================================
+  # Image Pipeline
+  # ==========================================
+  ImagePipeline:
+    Type: AWS::ImageBuilder::ImagePipeline
+    DependsOn:
+      - InfrastructureConfig    
+      - DistributionConfig
+      - AppImageRecipe
+      - ImageBuilderWorkflowExecutionRole
+    Properties:
+      Name: !Sub 
+        - '${AWS::StackName}-pipeline-${ShortStackId}'
+        - ShortStackId: !Select [2, !Split ['/', !Ref 'AWS::StackId']]
+      Description: 'Pipeline to build Python application AMI with custom workflow'
+      ImageRecipeArn: !Ref AppImageRecipe
+      InfrastructureConfigurationArn: !Ref InfrastructureConfig
+      # ExecutionRole: !GetAtt ImageBuilderWorkflowExecutionRole.Arn
+      DistributionConfigurationArn: !Ref DistributionConfig
+      Status: ENABLED
+      # Workflows:
+      #   - WorkflowArn: 'arn:aws:imagebuilder:us-east-1:aws:workflow/build/build-image/x.x.x'
+      ImageTestsConfiguration:     # Disable default test workflow
+        ImageTestsEnabled: false
+        TimeoutMinutes: 60
+      Tags:
+        Name: !Sub '${AWS::StackName}-Pipeline'
+        Environment: 'SOA'
+        TriggerType: 'CustomWorkflow'
+
+  # ==========================================
+  # Custom Resource - Always wait for AMI build to complete
+  # ==========================================
+  AMIBuilder:
+    Type: Custom::AMIBuilder
+    DependsOn:
+      - ImagePipeline
+      - AMIBuilderFunction
+    Properties:
+      ServiceToken: !GetAtt AMIBuilderFunction.Arn
+      PipelineArn: !GetAtt ImagePipeline.Arn
+
+# ==========================================
+# Outputs
+# ==========================================
+Outputs:
+  PipelineArn:
+    Description: 'ARN of Image Pipeline'
+    Value: !GetAtt ImagePipeline.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-PipelineArn'
+  
+  AMIId:
+    Description: 'ID of successfully built AMI'
+    Value: !GetAtt AMIBuilder.AMIId
+    Export:
+      Name: !Sub '${AWS::StackName}-AMIId'
+  
+  BuildStatus:
+    Description: 'Status of AMI build'
+    Value: !GetAtt AMIBuilder.Status
+  
+  BuildVersion:
+    Description: 'Version of AMI build'
+    Value: !GetAtt AMIBuilder.BuildVersion
+  
+  BuildTime:
+    Description: 'AMI build time'
+    Value: !GetAtt AMIBuilder.BuildTime
+  
+  StackStatus:
+    Description: 'Stack creation status'
+    Value: 'SUCCESS - AMI has been built successfully and is ready to use!'
+  
+  NextSteps:
+    Description: 'Next steps'
+    Value: !Sub |
+      1. AMI ID: ${AMIBuilder.AMIId}
+      2. Git Branch: ${GitBranchName}
+      3. Use this AMI to launch EC2 instances
+      4. To build new AMI: aws imagebuilder start-image-pipeline-execution --image-pipeline-arn ${ImagePipeline.Arn} --region ${AWS::Region}
+  
+  CheckAMICommand:
+    Description: 'Command to check AMI information'
+    Value: !Sub |
+      aws ec2 describe-images \
+        --image-ids ${AMIBuilder.AMIId} \
+        --query 'Images[0].[Name,State,CreationDate]' \
+        --output table \
+        --region ${AWS::Region}
