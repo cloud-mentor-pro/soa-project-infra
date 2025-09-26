@@ -27,7 +27,21 @@ Resources:
         Name: soa-param-codeland-db-url
         Environment: develop
         SystemID: SOA
-
+  
+  S3BucketNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: soa-param-codeland-static-bucket-name
+      Description: !Sub S3 bucket name cho static website hosting environment
+      Type: String
+      Value: !Ref S3BucketName
+      Tier: Standard
+      DataType: text
+      Tags:
+        Name: soa-param-codeland-static-bucket-name
+        Environment: develop
+        SystemID: SOA
+  
   # Database Secret Name Parameter
   DatabaseSecretNameParameter:
     Type: AWS::SSM::Parameter
