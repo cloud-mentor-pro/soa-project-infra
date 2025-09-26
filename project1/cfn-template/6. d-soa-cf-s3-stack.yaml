@@ -1,22 +1,23 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'SOA Stack - CloudFront distribution with S3 static website and image storage bucket'
+Description: SOA Stack - CloudFront distribution with S3 static website and
+  image storage bucket
 
 Parameters:
   Environment:
     Type: String
     Default: develop
     Description: Environment name for resource naming
-  
+
 Resources:
-  # S3 Bucket cho static website hosting (b1)
+  # S3 Bucket for static website hosting (b1)
   StaticWebsiteBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub 'soa-param-codeland-s3-static-website-${AWS::AccountId}-${AWS::Region}'
+      BucketName: !Sub soa-param-codeland-s3-static-website-${AWS::AccountId}-${AWS::Region}
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
-        IgnorePublicAcls: true  
+        IgnorePublicAcls: true
         RestrictPublicBuckets: true
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -32,11 +33,11 @@ Resources:
         - Key: SystemID
           Value: SOA
 
-  # S3 Bucket cho image storage (b2) 
+  # S3 Bucket for image storage (b2) 
   ImageStorageBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub 'soa-param-codeland-s3-image-storage-${AWS::AccountId}-${AWS::Region}'
+      BucketName: !Sub soa-param-codeland-s3-image-storage-${AWS::AccountId}-${AWS::Region}
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -56,7 +57,7 @@ Resources:
         - Key: SystemID
           Value: SOA
 
-  # Origin Access Control cho CloudFront
+  # Origin Access Control for CloudFront
   OriginAccessControl:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
@@ -65,14 +66,14 @@ Resources:
         OriginAccessControlOriginType: s3
         SigningBehavior: always
         SigningProtocol: sigv4
-        Description: 'OAC for SOA static website bucket'
+        Description: OAC for SOA static website bucket
 
   # CloudFront Distribution (cf1)
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
       DistributionConfig:
-        Comment: 'SOA CloudFront Distribution for static website'
+        Comment: SOA CloudFront Distribution for static website
         Enabled: true
         DefaultRootObject: index.html
         Origins:
@@ -93,7 +94,7 @@ Resources:
           Compress: true
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed CachingOptimized
         CacheBehaviors:
-          - PathPattern: "/*"
+          - PathPattern: /*
             TargetOriginId: soa-s3-origin
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods:
@@ -116,7 +117,7 @@ Resources:
         - Key: SystemID
           Value: SOA
 
-  # Bucket Policy cho static website bucket - chỉ cho phép CloudFront truy cập
+  # Bucket Policy for static website bucket - only allows CloudFront access
   StaticWebsiteBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -127,14 +128,14 @@ Resources:
             Effect: Allow
             Principal:
               Service: cloudfront.amazonaws.com
-            Action: 
+            Action:
               - s3:GetObject
-            Resource: !Sub '${StaticWebsiteBucket}/*'
+            Resource: !Sub ${StaticWebsiteBucket}/*
             Condition:
               StringEquals:
-                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
 
-  # IAM Role cho EC2 instances với SSM và S3 permissions
+  # IAM Role for EC2 instances with SSM and S3 permissions
   EC2S3AccessRole:
     Type: AWS::IAM::Role
     Properties:
@@ -187,7 +188,7 @@ Resources:
         - Key: SystemID
           Value: SOA
 
-  # Instance Profile cho EC2 
+  # Instance Profile for EC2 
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
@@ -195,7 +196,7 @@ Resources:
       Roles:
         - !Ref EC2S3AccessRole
 
-  # Bucket Policy cho image storage - chỉ cho phép EC2 instances với specific role
+  # Bucket Policy for image storage - only allows EC2 instances with specific role
   ImageStorageBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -210,7 +211,7 @@ Resources:
               - s3:GetObject
               - s3:PutObject
               - s3:DeleteObject
-            Resource: !Sub '${ImageStorageBucket}/*'
+            Resource: !Sub ${ImageStorageBucket}/*
           - Sid: AllowEC2RoleListBucket
             Effect: Allow
             Principal:
@@ -218,12 +219,12 @@ Resources:
             Action: s3:ListBucket
             Resource: !GetAtt ImageStorageBucket.Arn
 
-  # SSM Parameter để lưu tên bucket
+  # SSM Parameter to store bucket name
   S3BucketNameParameter:
     Type: AWS::SSM::Parameter
     Properties:
       Name: soa-param-codeland-static-bucket-name
-      Description: 'S3 bucket name cho static website hosting environment'
+      Description: S3 bucket name for static website hosting environment
       Type: String
       Value: !Ref ImageStorageBucket
       Tier: Standard
@@ -238,28 +239,28 @@ Outputs:
     Description: CloudFront Distribution ID
     Value: !Ref CloudFrontDistribution
     Export:
-      Name: !Sub '${AWS::StackName}-CloudFrontDistributionId'
-  
+      Name: !Sub ${AWS::StackName}-CloudFrontDistributionId
+
   CloudFrontDomainName:
     Description: CloudFront Distribution Domain Name
     Value: !GetAtt CloudFrontDistribution.DomainName
     Export:
-      Name: !Sub '${AWS::StackName}-CloudFrontDomainName'
-  
+      Name: !Sub ${AWS::StackName}-CloudFrontDomainName
+
   StaticWebsiteBucketName:
     Description: Static Website S3 Bucket Name
     Value: !Ref StaticWebsiteBucket
     Export:
-      Name: !Sub '${AWS::StackName}-StaticWebsiteBucketName'
-  
+      Name: !Sub ${AWS::StackName}-StaticWebsiteBucketName
+
   ImageStorageBucketName:
-    Description: Image Storage S3 Bucket Name  
+    Description: Image Storage S3 Bucket Name
     Value: !Ref ImageStorageBucket
     Export:
-      Name: !Sub '${AWS::StackName}-ImageStorageBucketName'
-  
+      Name: !Sub ${AWS::StackName}-ImageStorageBucketName
+
   EC2InstanceProfileArn:
     Description: EC2 Instance Profile ARN for S3 access
     Value: !GetAtt EC2InstanceProfile.Arn
     Export:
-      Name: !Sub '${AWS::StackName}-EC2InstanceProfileArn'
+      Name: !Sub ${AWS::StackName}-EC2InstanceProfileArn

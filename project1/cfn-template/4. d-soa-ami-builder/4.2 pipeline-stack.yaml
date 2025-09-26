@@ -324,6 +324,9 @@ Resources:
                       # Install necessary packages including AWS CLI
                       sudo dnf install -y nmap-ncat gcc gcc-c++ make postgresql-devel python3-devel 
                       
+                      # Install cloud watch agent
+                      sudo dnf -y install amazon-cloudwatch-agent
+
                       # update cfn packages
                       sudo yum update -y aws-cfn-bootstrap
 
@@ -416,8 +419,8 @@ Resources:
                       echo "===== Step 5: Install Python dependencies ====="
                       
                       # Create virtual environment for application
-                      python3 -m venv /home/root/app/venv
-                      source /home/root/app/venv/bin/activate
+                      python3 -m venv /root/app/venv
+                      source /root/app/venv/bin/activate
 
                       cd {{ AppDir }}/backend
                       pip3 install --upgrade pip
@@ -431,6 +434,8 @@ Resources:
                       fi
                       
                       pip3 show gunicorn
+                      cd /root/app
+                      chmod +x ./scripts/start.sh
               
           #     # Step 8: Create systemd service
           #     - name: CreateSystemdService
@@ -485,7 +490,7 @@ Resources:
           #           - |
           #             echo "===== Validation Phase ====="
           #             # Switch env
-          #             source /home/root/app/venv/bin/activate
+          #             source /root/app/venv/bin/activate
           #             # Validate installed components
           #             python3 --version || exit 1
           #             git --version || exit 1
