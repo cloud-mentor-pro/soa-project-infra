@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CloudFormation template for SOA Compute Resources - Launch Template, ASG, ALB'
+Description: 'CloudFormation template for SOA Compute Resources - Launch Template, ASG, ALB with WaitCondition'
 
 Parameters:
   # Networking Parameters
@@ -54,7 +54,6 @@ Parameters:
       - t2.medium
 
 Resources:
-  # Launch Template
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -64,6 +63,24 @@ Resources:
         InstanceType: !Ref InstanceType
         SecurityGroupIds:
           - !Ref AppSecurityGroupId
+        UserData:
+          Fn::Base64: !Sub |         
+            # Install your application here
+            # Example: Start your codeland-api service
+            # systemctl start codeland-api
+            # systemctl enable codeland-api
+            
+            # Wait for application to be ready (optional health check)
+            # while ! curl -f http://localhost:80/users/ping; do
+            #   echo "Waiting for application to start..."
+            #   sleep 5
+            # done
+            
+            # Signal CloudFormation that instance is ready
+            /opt/aws/bin/cfn-signal -e $? \
+              --stack ${AWS::StackName} \
+              --resource AutoScalingGroup \
+              --region ${AWS::Region}
         TagSpecifications:
           - ResourceType: instance
             Tags:
@@ -73,6 +90,7 @@ Resources:
                 Value: develop
               - Key: SystemID
                 Value: SOA
+
   # Target Group
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -127,7 +145,7 @@ Resources:
       Port: 80
       Protocol: HTTP
 
-  # Auto Scaling Group
+  # Auto Scaling Group với CreationPolicy
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn: 
@@ -157,6 +175,10 @@ Resources:
         - Key: SystemID
           Value: SOA
           PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1                
+        Timeout: PT10M          
 
 Outputs:
   ALBDnsName:

@@ -46,7 +46,7 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Role: 
-        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-a-LambdaRoleArn'
+        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-LambdaRoleArn'
       Timeout: 300
       Code:
         ZipFile: |
@@ -81,7 +81,7 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Role: 
-        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-a-LambdaRoleArn'
+        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-LambdaRoleArn'
       Timeout: 300
       Code:
         ZipFile: |
@@ -136,7 +136,7 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Role: 
-        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-a-LambdaRoleArn'
+        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-LambdaRoleArn'
       Timeout: 300
       Code:
         ZipFile: |
@@ -184,7 +184,7 @@ Resources:
     Properties:
       StateMachineName: !Sub '${AWS::StackName}-AMI-Monitor'
       RoleArn: 
-        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-a-StepFunctionRoleArn'
+        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-StepFunctionRoleArn'
       DefinitionString: !Sub |
         {
           "StartAt": "InitializeMonitoring",
@@ -294,9 +294,9 @@ Resources:
         - 'Amazon Linux 2023'
       Data: !Sub |
         name: ApplicationSetupComponent
-        description: Install and configure Python application with Gunicorn
+        description: Install and configure Python application with Gunicorn and CloudFormation integration
         schemaVersion: 1.0
-        
+
         constants:
           - AppDir:
               type: string
@@ -304,7 +304,7 @@ Resources:
           - ServiceName:
               type: string
               value: python-app
-        
+
         phases:
           - name: build
             steps:
@@ -316,17 +316,36 @@ Resources:
                   commands:
                     - |
                       echo "===== Step 1: Update system and install basic packages ====="
-                      echo "switch to ec2-user"
-                      sudo -u ec2-user bash << 'EOF'
-                      cd /home/ec2-user
+                      cd ~
                       echo $(whoami)
 
                       sudo dnf update -y
                       
-                      # Install necessary packages
-                      sudo dnf install -y nmap-ncat gcc gcc-c++ make postgresql-devel python3-devel
+                      # Install necessary packages including AWS CLI
+                      sudo dnf install -y nmap-ncat gcc gcc-c++ make postgresql-devel python3-devel 
+                      
+                      # update cfn packages
+                      sudo yum update -y aws-cfn-bootstrap
+
+                      # check AWS CLI 
+                      if command -v aws >/dev/null 2>&1; then
+                          aws --version
+                      elif [ -f "/usr/bin/aws" ]; then
+                          /usr/bin/aws --version
+                      elif [ -f "/usr/local/bin/aws" ]; then
+                          /usr/local/bin/aws --version
+                      else
+                          echo "Installing AWS CLI v2..."
+                          cd /tmp
+                          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                          unzip awscliv2.zip
+                          sudo ./aws/install
+                          /usr/local/bin/aws --version
+                          aws --version
+                      fi
                       
                       echo "Installed basic packages"
+              
               # Step 2: Install Git
               - name: InstallGit
                 action: ExecuteBash
@@ -334,29 +353,27 @@ Resources:
                 inputs:
                   commands:
                     - |
-                      echo "===== Step 3: Install Git ====="
+                      echo "===== Step 2: Install Git ====="
                       sudo dnf install -y git
                       git --version
                       echo "Git has been installed"
 
-              # Step 3: Install Python 3.12
-              - name: InstallPython312
-                action: ExecuteBash
-                onFailure: Abort
-                inputs:
-                  commands:
-                    - |
-                      echo "===== Step 2: Install Python 3.12 ====="
-                      sudo dnf install -y python3.12 python3.12-pip python3.12-devel
-                      sudo alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
-                      sudo alternatives --set python3 /usr/bin/python3.12
-                      sudo ln -sf /usr/bin/pip3.12 /usr/bin/pip3
+              # # Step 3: Install Python 3.12
+              # - name: InstallPython312
+              #   action: ExecuteBash
+              #   onFailure: Abort
+              #   inputs:
+              #     commands:
+              #       - |
+              #         echo "===== Step 3: Install Python 3.12 ====="
+              #         sudo dnf install -y python3.12 python3.12-pip python3.12-devel
+              #         sudo alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+              #         sudo alternatives --set python3 /usr/bin/python3.12
+              #         sudo ln -sf /usr/bin/pip3.12 /usr/bin/pip3
                       
-                      python3 --version
-                      pip3 --version
-                      echo "Python 3.12 has been installed"
-              
-
+              #         python3 --version
+              #         pip3 --version
+              #         echo "Python 3.12 has been installed"
               
               # Step 4: Clone repository and checkout branch
               - name: CloneRepository
@@ -366,6 +383,7 @@ Resources:
                   commands:
                     - |
                       echo "===== Step 4: Clone source code from GitHub ====="
+                      cd ~
                       
                       [ -d "{{ AppDir }}" ] && sudo rm -rf {{ AppDir }}
                       
@@ -397,6 +415,10 @@ Resources:
                     - |
                       echo "===== Step 5: Install Python dependencies ====="
                       
+                      # Create virtual environment for application
+                      python3 -m venv /home/root/app/venv
+                      source /home/root/app/venv/bin/activate
+
                       cd {{ AppDir }}/backend
                       pip3 install --upgrade pip
                       pip3 install gunicorn
@@ -410,131 +432,82 @@ Resources:
                       
                       pip3 show gunicorn
               
-              # Step 6: Create startup script
-              - name: CreateStartupScript
-                action: CreateFile
-                onFailure: Abort
-                inputs:
-                  - path: '{{ AppDir }}/start.sh'
-                    permissions: 755
-                    owner: ec2-user
-                    group: ec2-user
-                    content: |
-                      #!/bin/bash
-                      set -e
+          #     # Step 8: Create systemd service
+          #     - name: CreateSystemdService
+          #       action: CreateFile
+          #       onFailure: Abort
+          #       inputs:
+          #         - path: /etc/systemd/system/{{ ServiceName }}.service
+          #           permissions: 644
+          #           owner: root
+          #           group: root
+          #           content: |
+          #             [Unit]
+          #             Description=Python Application with Gunicorn
+          #             After=network.target
                       
-                      echo "Loading environment variables..."
+          #             [Service]
+          #             Type=simple
+          #             User=root
+          #             Group=root
+          #             WorkingDirectory={{ AppDir }}
+          #             Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+          #             Environment="LANG=en_US.UTF-8"
+          #             ExecStart={{ AppDir }}/scripts/start.sh
+          #             Restart=always
+          #             RestartSec=10
+          #             StandardOutput=journal
+          #             StandardError=journal
+          #             SyslogIdentifier={{ ServiceName }}
                       
-                      # Load DB URL from Parameter Store
-                      export DB_URL=$(aws ssm get-parameter \
-                        --name "${DBUrlParameterPath}" \
-                        --query 'Parameter.Value' \
-                        --output text \
-                        --region ${AWS::Region} 2>/dev/null || echo "localhost")
-                      
-                      # Load DB Password from Secrets Manager
-                      export DB_PASSWORD=$(aws secretsmanager get-secret-value \
-                        --secret-id "${DBPasswordSecretId}" \
-                        --query SecretString \
-                        --output text \
-                        --region ${AWS::Region} 2>/dev/null || echo "default_password")
-                      
-                      export DB_PORT=5432
-                      export PORT=80
-                      
-                      echo "Configuration:"
-                      echo "  DB_URL: $DB_URL"
-                      echo "  DB_PORT: $DB_PORT"
-                      echo "  APP_PORT: $PORT"
-                      
-                      # Check database connection
-                      echo "Checking database connection..."
-                      counter=0
-                      while ! nc -z $DB_URL $DB_PORT 2>/dev/null; do
-                          sleep 0.1
-                          counter=$((counter + 1))
-                          if [ $counter -ge 600 ]; then
-                              echo "Timeout: Could not connect to PostgreSQL after 60 seconds."
-                              exit 1
-                          fi
-                      done
-                      echo "PostgreSQL is reachable"
-                      
-                      # Start Gunicorn server
-                      echo "Starting Gunicorn server..."
-                      cd {{ AppDir }}
-                      exec gunicorn -b 0.0.0.0:$PORT manage:app \
-                        --workers 4 \
-                        --timeout 120 \
-                        --log-level info
+          #             [Install]
+          #             WantedBy=multi-user.target
               
-              # Step 7: Create systemd service
-              - name: CreateSystemdService
-                action: CreateFile
-                onFailure: Abort
-                inputs:
-                  - path: /etc/systemd/system/{{ ServiceName }}.service
-                    permissions: 644
-                    owner: root
-                    group: root
-                    content: |
-                      [Unit]
-                      Description=Python Application with Gunicorn
-                      After=network.target
+          #     # Step 10: Enable service
+          #     - name: EnableService
+          #       action: ExecuteBash
+          #       onFailure: Abort
+          #       inputs:
+          #         commands:
+          #           - |
+          #             echo "===== Step 10: Enable systemd service ====="
+          #             sudo systemctl daemon-reload
+          #             sudo systemctl enable {{ ServiceName }}.service
+          #             echo "Service has been enabled for automatic startup"
+
+          # - name: validate
+          #   steps:
+          #     - name: ValidateSetup
+          #       action: ExecuteBash
+          #       onFailure: Abort
+          #       inputs:
+          #         commands:
+          #           - |
+          #             echo "===== Validation Phase ====="
+          #             # Switch env
+          #             source /home/root/app/venv/bin/activate
+          #             # Validate installed components
+          #             python3 --version || exit 1
+          #             git --version || exit 1
+          #             pip3 show gunicorn || exit 1
+          #             aws --version || exit 1
                       
-                      [Service]
-                      Type=simple
-                      User=ec2-user
-                      Group=ec2-user
-                      WorkingDirectory={{ AppDir }}
-                      Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-                      Environment="LANG=en_US.UTF-8"
-                      ExecStart={{ AppDir }}/start.sh
-                      Restart=always
-                      RestartSec=10
-                      StandardOutput=journal
-                      StandardError=journal
-                      SyslogIdentifier={{ ServiceName }}
+          #             # Validate files and directories
+          #             [ -d "{{ AppDir }}" ] || { echo "App directory not found"; exit 1; }
+          #             [ -f "{{ AppDir }}/start.sh" ] || { echo "Start script not found"; exit 1; }
+          #             [ -f "{{ AppDir }}/health_check.sh" ] || { echo "Health check script not found"; exit 1; }
+          #             [ -f "{{ AppDir }}/cfn_signal.sh" ] || { echo "CFN signal script not found"; exit 1; }
+          #             [ -f "/etc/systemd/system/{{ ServiceName }}.service" ] || { echo "Service file not found"; exit 1; }
                       
-                      [Install]
-                      WantedBy=multi-user.target
-              
-              # Step 8: Enable service
-              - name: EnableService
-                action: ExecuteBash
-                onFailure: Abort
-                inputs:
-                  commands:
-                    - |
-                      echo "===== Step 8: Enable systemd service ====="
-                      sudo systemctl daemon-reload
-                      sudo systemctl enable {{ ServiceName }}.service
-                      echo "Service has been enabled for automatic startup"
-          
-          - name: validate
-            steps:
-              - name: ValidateSetup
-                action: ExecuteBash
-                onFailure: Abort
-                inputs:
-                  commands:
-                    - |
-                      echo "===== Validation Phase ====="
+          #             # Validate service configuration
+          #             systemctl is-enabled {{ ServiceName }}.service || { echo "Service not enabled"; exit 1; }
                       
-                      # Validate installed components
-                      python3 --version || exit 1
-                      git --version || exit 1
-                      pip3 show gunicorn || exit 1
+          #             # Validate script permissions
+          #             [ -x "{{ AppDir }}/start.sh" ] || { echo "Start script not executable"; exit 1; }
+          #             [ -x "{{ AppDir }}/health_check.sh" ] || { echo "Health check script not executable"; exit 1; }
+          #             [ -x "{{ AppDir }}/cfn_signal.sh" ] || { echo "CFN signal script not executable"; exit 1; }
                       
-                      # Validate files and directories
-                      [ -d "{{ AppDir }}" ] || { echo "App directory not found"; exit 1; }
-                      [ -f "{{ AppDir }}/start.sh" ] || { echo "Start script not found"; exit 1; }
-                      [ -f "/etc/systemd/system/{{ ServiceName }}.service" ] || { echo "Service file not found"; exit 1; }
-                      
-                      # Validate service configuration
-                      systemctl is-enabled {{ ServiceName }}.service || { echo "Service not enabled"; exit 1; }
-                      
-                      echo "All validation checks have passed"
+          #             echo "All validation checks have passed"
 
   InfrastructureConfig:
     Type: AWS::ImageBuilder::InfrastructureConfiguration
@@ -542,7 +515,7 @@ Resources:
       Name: !Sub '${AWS::StackName}-infra-config'
       Description: 'Infrastructure configuration'
       InstanceProfileName: 
-        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-a-InstanceProfileName'
+        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-InstanceProfileName'
       InstanceTypes:
         - t3.medium
       SubnetId: !Ref SubnetId
@@ -604,7 +577,7 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Role: 
-        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-a-LambdaRoleArn'
+        Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-LambdaRoleArn'
       Timeout: 300
       Code:
         ZipFile: !Sub |
