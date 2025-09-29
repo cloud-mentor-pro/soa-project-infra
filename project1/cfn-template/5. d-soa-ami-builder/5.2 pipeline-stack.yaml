@@ -24,16 +24,7 @@ Parameters:
     Type: String
     Default: 'develop-SOA-K02 '
     Description: 'Git branch name to checkout'
-  
-  DBUrlParameterPath:
-    Type: String
-    Default: 'soa-param-codeland-db-url'
-    Description: 'SSM Parameter Store path for DB URL'
-  
-  DBPasswordSecretId:
-    Type: String
-    Default: 'rds!zzz'
-    Description: 'Secrets Manager secret ID for DB Password'
+
 
 Resources:
   # ==========================================
@@ -300,10 +291,10 @@ Resources:
         constants:
           - AppDir:
               type: string
-              value: ~/app
+              value: /root/app
           - ServiceName:
               type: string
-              value: python-app
+              value: codeland-backend
 
         phases:
           - name: build
@@ -437,82 +428,145 @@ Resources:
                       cd /root/app
                       chmod +x ./scripts/start.sh
               
-          #     # Step 8: Create systemd service
-          #     - name: CreateSystemdService
-          #       action: CreateFile
-          #       onFailure: Abort
-          #       inputs:
-          #         - path: /etc/systemd/system/{{ ServiceName }}.service
-          #           permissions: 644
-          #           owner: root
-          #           group: root
-          #           content: |
-          #             [Unit]
-          #             Description=Python Application with Gunicorn
-          #             After=network.target
-                      
-          #             [Service]
-          #             Type=simple
-          #             User=root
-          #             Group=root
-          #             WorkingDirectory={{ AppDir }}
-          #             Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-          #             Environment="LANG=en_US.UTF-8"
-          #             ExecStart={{ AppDir }}/scripts/start.sh
-          #             Restart=always
-          #             RestartSec=10
-          #             StandardOutput=journal
-          #             StandardError=journal
-          #             SyslogIdentifier={{ ServiceName }}
-                      
-          #             [Install]
-          #             WantedBy=multi-user.target
+              # NEW Step 6: Create log directories for Gunicorn
+              - name: CreateGunicornLogDirs
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Step 6: Create Gunicorn log directories ====="
+                      sudo mkdir -p /var/log/gunicorn
+                      sudo chown root:root /var/log/gunicorn
+                      echo "Log directories created"
               
-          #     # Step 10: Enable service
-          #     - name: EnableService
-          #       action: ExecuteBash
-          #       onFailure: Abort
-          #       inputs:
-          #         commands:
-          #           - |
-          #             echo "===== Step 10: Enable systemd service ====="
-          #             sudo systemctl daemon-reload
-          #             sudo systemctl enable {{ ServiceName }}.service
-          #             echo "Service has been enabled for automatic startup"
+              # NEW Step 7: Create CloudWatch Agent configuration file
+              - name: CreateCWAgentConfig
+                action: CreateFile
+                onFailure: Abort
+                inputs:
+                  - path: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+                    permissions: 644
+                    owner: root
+                    group: root
+                    content: |
+                      {
+                        "logs": {
+                          "logs_collected": {
+                            "files": {
+                              "collect_list": [
+                                {
+                                  "file_path": "/var/log/gunicorn/gunicorn_error.log",
+                                  "log_group_name": "/aws/ec2/{{ ServiceName }}-error",
+                                  "log_stream_name": "{instance_id}",
+                                  "timezone": "UTC"
+                                },
+                                {
+                                  "file_path": "/var/log/gunicorn/gunicorn_access.log",
+                                  "log_group_name": "/aws/ec2/{{ ServiceName }}-access",
+                                  "log_stream_name": "{instance_id}",
+                                  "timezone": "UTC"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+              
+              # Step 8: Create systemd service (unchanged)
+              - name: CreateSystemdService
+                action: CreateFile
+                onFailure: Abort
+                inputs:
+                  - path: /etc/systemd/system/{{ ServiceName }}.service
+                    permissions: 644
+                    owner: root
+                    group: root
+                    content: |
+                      [Unit]
+                      Description=Codeland backend Python Application with Gunicorn
+                      After=network.target
+                      
+                      [Service]
+                      Type=simple
+                      User=root
+                      Group=root
+                      WorkingDirectory={{ AppDir }}
+                      Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+                      Environment="LANG=en_US.UTF-8"
+                      ExecStart={{ AppDir }}/scripts/start.sh prod
+                      Restart=always
+                      RestartSec=10
+                      StandardOutput=journal
+                      StandardError=journal
+                      SyslogIdentifier={{ ServiceName }}
+                      
+                      [Install]
+                      WantedBy=multi-user.target
+              
+              # NEW Step 9: Configure and enable CloudWatch Agent
+              - name: ConfigureCWAgent
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Step 9: Configure and enable CloudWatch Agent ====="
+                      sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
+                      sudo systemctl enable amazon-cloudwatch-agent.service
+                      echo "CloudWatch Agent configured and enabled"
+              
+              # Step 10: Enable service (unchanged)
+              - name: EnableService
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Step 10: Enable systemd service ====="
+                      sudo systemctl daemon-reload
+                      sudo systemctl enable {{ ServiceName }}.service
+                      echo "Service has been enabled for automatic startup"
 
-          # - name: validate
-          #   steps:
-          #     - name: ValidateSetup
-          #       action: ExecuteBash
-          #       onFailure: Abort
-          #       inputs:
-          #         commands:
-          #           - |
-          #             echo "===== Validation Phase ====="
-          #             # Switch env
-          #             source /root/app/venv/bin/activate
-          #             # Validate installed components
-          #             python3 --version || exit 1
-          #             git --version || exit 1
-          #             pip3 show gunicorn || exit 1
-          #             aws --version || exit 1
+              - name: ValidateSetup
+                action: ExecuteBash
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      echo "===== Validation Phase ====="
                       
-          #             # Validate files and directories
-          #             [ -d "{{ AppDir }}" ] || { echo "App directory not found"; exit 1; }
-          #             [ -f "{{ AppDir }}/start.sh" ] || { echo "Start script not found"; exit 1; }
-          #             [ -f "{{ AppDir }}/health_check.sh" ] || { echo "Health check script not found"; exit 1; }
-          #             [ -f "{{ AppDir }}/cfn_signal.sh" ] || { echo "CFN signal script not found"; exit 1; }
-          #             [ -f "/etc/systemd/system/{{ ServiceName }}.service" ] || { echo "Service file not found"; exit 1; }
+                      cd {{ AppDir }}
                       
-          #             # Validate service configuration
-          #             systemctl is-enabled {{ ServiceName }}.service || { echo "Service not enabled"; exit 1; }
+                      # Switch env
+                      source /root/app/venv/bin/activate
                       
-          #             # Validate script permissions
-          #             [ -x "{{ AppDir }}/start.sh" ] || { echo "Start script not executable"; exit 1; }
-          #             [ -x "{{ AppDir }}/health_check.sh" ] || { echo "Health check script not executable"; exit 1; }
-          #             [ -x "{{ AppDir }}/cfn_signal.sh" ] || { echo "CFN signal script not executable"; exit 1; }
+                      # Validate installed components
+                      python3 --version || { echo "Python not found"; exit 1; }
+                      git --version || { echo "Git not found"; exit 1; }
+                      pip3 show gunicorn || { echo "gunicorn not found"; exit 1; }
                       
-          #             echo "All validation checks have passed"
+                      # Validate files and directories
+                      [ -d "{{ AppDir }}" ] || { echo "App directory not found"; exit 1; }
+                      [ -f "{{ AppDir }}/scripts/start.sh" ] || { echo "Start script not found"; exit 1; }
+                      [ -f "/etc/systemd/system/{{ ServiceName }}.service" ] || { echo "Service file not found"; exit 1; }
+                      
+                      # Validate CloudWatch Agent - check if service is configured properly
+                      [ -d "/var/log/gunicorn" ] || { echo "Gunicorn log directory not found"; exit 1; }
+                      
+                      # Check if CloudWatch Agent service is enabled (this is more reliable)
+                      sudo systemctl is-enabled amazon-cloudwatch-agent.service >/dev/null 2>&1 || { echo "CW Agent service not enabled"; exit 1; }
+                      
+                      # Check if CloudWatch Agent binary exists
+                      [ -f "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl" ] || { echo "CW Agent not installed"; exit 1; }
+                      
+                      # Validate service configuration
+                      sudo systemctl is-enabled {{ ServiceName }}.service || { echo "Service not enabled"; exit 1; }
+                      
+                      # Validate script permissions
+                      [ -x "{{ AppDir }}/scripts/start.sh" ] || { echo "Start script not executable"; exit 1; }
+                      
+                      echo "All validation checks have passed"
 
   InfrastructureConfig:
     Type: AWS::ImageBuilder::InfrastructureConfiguration
