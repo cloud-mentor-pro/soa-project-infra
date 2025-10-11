@@ -6,11 +6,6 @@ Parameters:
     Type: AWS::EC2::VPC::Id
     Description: Select the VPC for Security Groups
 
-  AdminCidrBlock:
-    Type: String
-    Description: CIDR block for admin access (e.g., your office IP range for Bastion SSH)
-    Default: 0.0.0.0/0  # Adjust to a secure CIDR in production
-
 Resources:
   # Security Group for ALB (Public Tier)
   ALBSecurityGroup:
@@ -110,12 +105,6 @@ Resources:
       GroupName: soa-sg-codeland-bastion
       GroupDescription: Security Group for Bastion Host (SSH access to App/DB)
       VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: !Ref AdminCidrBlock
-          Description: Allow SSH from Admin CIDR
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
