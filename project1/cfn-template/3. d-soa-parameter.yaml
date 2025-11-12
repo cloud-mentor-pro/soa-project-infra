@@ -32,9 +32,9 @@ Resources:
     Type: AWS::SSM::Parameter
     Properties:
       Name: soa-param-codeland-static-bucket-name
-      Description: !Sub S3 bucket name cho static website hosting environment
+      Description: !Sub S3 bucket name for static website hosting environment
       Type: String
-      Value: !Ref S3BucketName
+      Value: 'Type soa-param-codeland-static-bucket-name here ...'
       Tier: Standard
       DataType: text
       Tags:
