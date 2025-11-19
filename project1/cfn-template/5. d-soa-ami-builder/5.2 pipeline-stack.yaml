@@ -576,7 +576,7 @@ Resources:
       InstanceProfileName: 
         Fn::ImportValue: !Sub 'd-soa-ami-builder-iam-InstanceProfileName'
       InstanceTypes:
-        - t3.medium
+        - t3.micro
       SubnetId: !Ref SubnetId
       SecurityGroupIds:
         - !Ref SecurityGroupId
