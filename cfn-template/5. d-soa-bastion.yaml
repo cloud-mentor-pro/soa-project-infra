@@ -122,7 +122,12 @@ Resources:
           curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
           chmod +x /usr/local/bin/docker-compose
           ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
-          
+
+          # Install buildx version
+          curl -sSfL https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 -o /usr/libexec/docker/cli-plugins/docker-buildx
+          chmod +x /usr/libexec/docker/cli-plugins/docker-buildx
+          docker buildx install
+
           # Create helper scripts for database connection
           cat > /home/ec2-user/connect-db.sh << 'EOF'
           #!/bin/bash
